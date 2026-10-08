@@ -127,7 +127,8 @@ func CompareAddresses(left, right *ParsedAddress) AddressMatch {
 		match.MatchedThrough = MatchDeliveryPoint
 		switch leftPoint.Kind {
 		case DeliveryPointStreet:
-			compareComponent(&match, MatchUnit, leftPoint.Street.Unit, rightPoint.Street.Unit, &conflict)
+			leftUnit, rightUnit := comparableUnits(leftPoint.Street.Unit, rightPoint.Street.Unit)
+			compareComponent(&match, MatchUnit, leftUnit, rightUnit, &conflict)
 			compareComponent(&match, MatchLevel, leftPoint.Street.Level, rightPoint.Street.Level, &conflict)
 			compareComponent(&match, MatchStreetNumber, leftPoint.Street.StreetNumber, rightPoint.Street.StreetNumber, &conflict)
 			compareComponent(&match, MatchStreetName, leftPoint.Street.StreetName, rightPoint.Street.StreetName, &conflict)
@@ -235,4 +236,22 @@ func writeFinalKeyField(key *strings.Builder, name, value string) {
 func writeAddressKeyField(key *strings.Builder, name, value string) {
 	key.WriteByte('|')
 	writeFinalKeyField(key, name, value)
+}
+
+// comparableUnits compares a bare "5" (from "5/20") with "UNIT 5" by
+// identifier, since the slash form never names the unit type.
+func comparableUnits(left, right string) (string, string) {
+	leftType, leftID := splitUnit(left)
+	rightType, rightID := splitUnit(right)
+	if leftType == "" || rightType == "" {
+		return leftID, rightID
+	}
+	return left, right
+}
+
+func splitUnit(unit string) (string, string) {
+	if unitType, identifier, ok := strings.Cut(unit, " "); ok {
+		return unitType, identifier
+	}
+	return "", unit
 }
