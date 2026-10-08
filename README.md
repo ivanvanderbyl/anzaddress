@@ -175,6 +175,18 @@ fmt.Println(match.MissingFromLeft[1] == anzaddress.MatchPostcode) // true
 
 `ComparisonKey` exposes the canonical components as a deterministic string.
 Comparison does not use edit distance, phonetic matching, or typo correction.
+A bare unit from `5/20 Smith Street` matches a named `Unit 5` with the same
+identifier.
+
+`Parse` keeps the state as written. Call `WithInferredState` before comparing
+to fill a missing Australian state from a single-state locality or from the
+postcode, so `Sydney 2000` and `Sydney NSW 2000` share a key:
+
+```go
+left, _ := anzaddress.Parse("L8 20 Bond Street, Sydney 2000")
+right, _ := anzaddress.Parse("Level 8, 20 Bond Street, Sydney NSW 2000")
+fmt.Println(left.WithInferredState().ComparisonKey() == right.ComparisonKey()) // true
+```
 
 ## Parse more than one address from Go
 

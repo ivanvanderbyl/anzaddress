@@ -92,37 +92,58 @@ func recognizeStreet(tokens []token, start, limit int) (DeliveryPoint, int, bool
 			if !numberOK || streetNumber.kind != tokenNumberish {
 				return DeliveryPoint{}, start, false
 			}
-			delivery.Unit = first.value
+			// "L8/20": a compact level before the slash is a level, not a unit.
+			if level, ok := compactLevel(first.value); ok {
+				delivery.Level = level
+			} else if unit, ok := compactUnit(first.value); ok {
+				delivery.Unit = unit
+			} else {
+				delivery.Unit = first.value
+			}
 			delivery.StreetNumber = streetNumber.value
 			position = streetNumberNext
 		}
 	}
 
 	if delivery.StreetNumber == "" {
-		if unitType, next, matched := matchKeyword(tokens, position, streetLimit, unitKeywords); matched {
-			identifier, identifierNext, identifierOK := consumeAtom(tokens, next, streetLimit)
-			if !identifierOK {
-				return DeliveryPoint{}, start, false
-			}
-			delivery.Unit = strings.TrimSpace(unitType + " " + identifier.value)
-			position = identifierNext
-		}
-
-		if levelType, next, matched := matchKeyword(tokens, position, streetLimit, levelKeywords); matched {
-			if levelNeedsIdentifier(levelType) {
-				identifier, identifierNext, identifierOK := consumeAtom(tokens, next, streetLimit)
-				if !identifierOK {
-					return DeliveryPoint{}, start, false
+		// Unit and level may come in either order: "Suite 3, Level 2" or
+		// "Level 2 Suite 3".
+		for range 2 {
+			if delivery.Unit == "" {
+				if unit, next, matched := matchUnit(tokens, position, streetLimit); matched {
+					delivery.Unit = unit
+					position = next
+					continue
 				}
-				delivery.Level = strings.TrimSpace(levelType + " " + identifier.value)
-				position = identifierNext
-			} else {
-				delivery.Level = levelType
-				position = next
 			}
-		} else if level, next, matched := matchCompactLevel(tokens, position, streetLimit); matched {
-			delivery.Level = level
-			position = next
+			if delivery.Level == "" {
+				if levelType, next, matched := matchKeyword(tokens, position, streetLimit, levelKeywords); matched {
+					if levelNeedsIdentifier(levelType) {
+						identifier, identifierNext, identifierOK := consumeAtom(tokens, next, streetLimit)
+						if !identifierOK {
+							return DeliveryPoint{}, start, false
+						}
+						delivery.Level = strings.TrimSpace(levelType + " " + identifier.value)
+						position = identifierNext
+					} else {
+						delivery.Level = levelType
+						position = next
+					}
+					continue
+				} else if level, next, matched := matchCompactLevel(tokens, position, streetLimit); matched {
+					delivery.Level = level
+					position = next
+					continue
+				}
+			}
+			break
+		}
+		// "Level 8 / 20" and "Unit 5/20": a slash separates a named unit or
+		// level from the street number.
+		if delivery.Unit != "" || delivery.Level != "" {
+			if slash := skipSoftTokensBefore(tokens, position, streetLimit); slash < streetLimit && tokens[slash].kind == tokenSlash {
+				position = slash + 1
+			}
 		}
 
 		streetNumber, next, numberOK := consumeAtom(tokens, position, streetLimit)
@@ -175,35 +196,87 @@ func matchCompactLevel(tokens []token, start, limit int) (string, int, bool) {
 	if position >= limit || tokens[position].kind != tokenNumberish {
 		return "", start, false
 	}
+	level, ok := compactLevel(tokens[position].value)
+	if !ok || !numberFollows(tokens, position+1, limit) {
+		return "", start, false
+	}
+	return level, position + 1, true
+}
 
-	value := tokens[position].value
-	bestPrefix := ""
-	bestLevelType := ""
-	for keyword, levelType := range levelTypes {
-		keyword = normalizeAddressAtom(strings.Join(strings.Fields(keyword), " "))
-		if strings.Contains(keyword, " ") || !levelNeedsIdentifier(levelType) {
+// numberFollows reports a street number next, optionally after a slash or
+// another unit or level, so "L8 20", "L8/20" and "U5 L2 100" all qualify.
+func numberFollows(tokens []token, start, limit int) bool {
+	position := skipSoftTokensBefore(tokens, start, limit)
+	if position < limit && tokens[position].kind == tokenSlash {
+		position = skipSoftTokensBefore(tokens, position+1, limit)
+	}
+	if position >= limit || tokens[position].kind != tokenNumberish {
+		return false
+	}
+	if _, ok := compactLevel(tokens[position].value); ok {
+		return numberFollows(tokens, position+1, limit)
+	}
+	if _, ok := compactUnit(tokens[position].value); ok {
+		return numberFollows(tokens, position+1, limit)
+	}
+	return true
+}
+
+// matchUnit reads "Unit 5", "Suite 3" or a compact "U5".
+func matchUnit(tokens []token, start, limit int) (string, int, bool) {
+	if unitType, next, matched := matchKeyword(tokens, start, limit, unitKeywords); matched {
+		identifier, identifierNext, identifierOK := consumeAtom(tokens, next, limit)
+		if !identifierOK {
+			return "", start, false
+		}
+		return strings.TrimSpace(unitType + " " + identifier.value), identifierNext, true
+	}
+	position := skipSoftTokensBefore(tokens, start, limit)
+	if position >= limit || tokens[position].kind != tokenNumberish {
+		return "", start, false
+	}
+	unit, ok := compactUnit(tokens[position].value)
+	if !ok || !numberFollows(tokens, position+1, limit) {
+		return "", start, false
+	}
+	return unit, position + 1, true
+}
+
+// compactLevel reads "L8" as level 8.
+func compactLevel(value string) (string, bool) {
+	return compactKeyword(value, levelKeywords, levelNeedsIdentifier, false)
+}
+
+// compactUnit reads "U5" as unit 5. The identifier must start with a digit
+// so a street number such as "SE1" is not taken for a suite.
+func compactUnit(value string) (string, bool) {
+	return compactKeyword(value, unitKeywords, nil, true)
+}
+
+// compactKeyword splits a single-word keyword prefix from its identifier.
+// The longest prefix wins.
+func compactKeyword(value string, table keywordTable, needsIdentifier func(string) bool, requireDigit bool) (string, bool) {
+	best, bestType := "", ""
+	for keyword, normalized := range table.values {
+		if strings.Contains(keyword, " ") || (needsIdentifier != nil && !needsIdentifier(normalized)) {
 			continue
 		}
 		identifier := strings.TrimPrefix(value, keyword)
-		if identifier == value || identifier == "" || !isNumberish(identifier) {
+		if identifier == value || identifier == "" || !isNumberish(identifier) || (requireDigit && !startsWithDigit(identifier)) {
 			continue
 		}
-		if len(keyword) > len(bestPrefix) {
-			bestPrefix = keyword
-			bestLevelType = levelType
+		if len(keyword) > len(best) {
+			best, bestType = keyword, normalized
 		}
 	}
-	if bestPrefix == "" {
-		return "", start, false
+	if best == "" {
+		return "", false
 	}
+	return bestType + " " + strings.TrimPrefix(value, best), true
+}
 
-	streetNumber, _, ok := consumeAtom(tokens, position+1, limit)
-	if !ok || streetNumber.kind != tokenNumberish {
-		return "", start, false
-	}
-
-	identifier := strings.TrimPrefix(value, bestPrefix)
-	return bestLevelType + " " + identifier, position + 1, true
+func startsWithDigit(value string) bool {
+	return value != "" && value[0] >= '0' && value[0] <= '9'
 }
 
 func recognizeDeliverySequence(tokens []token, start, limit int) ([]DeliveryPoint, int, bool) {

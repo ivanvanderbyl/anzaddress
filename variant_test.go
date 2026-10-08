@@ -150,3 +150,48 @@ func TestCompareBareUnitWithNamedUnit(t *testing.T) {
 		})
 	}
 }
+
+// WithInferredState fills a missing state only when the locality or postcode
+// settles it, and Parse itself keeps the state as written.
+func TestWithInferredState(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "single-state locality", input: "L8 20 Bond Street, Sydney 2000", want: "NSW"},
+		{name: "single-state locality without postcode", input: "Level 8, 20 Bond Street, Sydney", want: "NSW"},
+		{name: "multi-state locality settled by postcode", input: "20 Smith Street, Fitzroy 3065", want: "VIC"},
+		{name: "multi-state locality without postcode", input: "20 Smith Street, Fitzroy", want: ""},
+		{name: "ACT postcode inside the NSW range", input: "1 Constitution Avenue, Canberra 2600", want: "ACT"},
+		{name: "written state kept", input: "20 Smith Street, Fitzroy SA 5034", want: "SA"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse(%q) error: %v", tt.input, err)
+			}
+			written := addr.State
+			if got := addr.WithInferredState().State; got != tt.want {
+				t.Errorf("WithInferredState().State = %q, want %q", got, tt.want)
+			}
+			if addr.State != written {
+				t.Errorf("WithInferredState changed the parsed address's State to %q", addr.State)
+			}
+		})
+	}
+
+	short, err := Parse("L8 20 Bond Street, Sydney 2000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := Parse("Level 8, 20 Bond Street, Sydney NSW 2000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if short.WithInferredState().ComparisonKey() != full.ComparisonKey() {
+		t.Errorf("inferred key %q, want %q", short.WithInferredState().ComparisonKey(), full.ComparisonKey())
+	}
+}
